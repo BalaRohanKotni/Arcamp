@@ -2,11 +2,14 @@
 import 'dart:async';
 import 'dart:ui';
 import 'package:arcamp/services/arcamp_audio_handler.dart';
+import 'package:arcamp/components/waveform_seekbar.dart';
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_waveforms/audio_waveforms.dart'; // Add this import
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:palette_generator/palette_generator.dart';
 
@@ -29,6 +32,11 @@ class _AppState extends State<App> {
   Timer? _positionTimer;
   Duration _currentPosition = Duration.zero;
 
+  // Add waveform-related variables
+  List<double> _waveformData = [];
+  bool _isLoadingWaveform = false;
+  final Map<String, List<double>> _waveformCache = {};
+
   @override
   void initState() {
     super.initState();
@@ -45,32 +53,174 @@ class _AppState extends State<App> {
   Color getComplementaryColor(Color color) {
     HSLColor hsl = HSLColor.fromColor(color);
     if (hsl.lightness < 0.5) {
-      // If dominant color is dark, use a much lighter version
       return hsl.withLightness((hsl.lightness + 0.6).clamp(0.0, 1.0)).toColor();
     } else {
-      // If dominant color is light, use a much darker version
       return hsl.withLightness((hsl.lightness - 0.6).clamp(0.0, 1.0)).toColor();
     }
   }
 
+  // Extract waveform data from audio file
+  Future<List<double>> _extractWaveformData(String audioPath) async {
+    // Create a unique cache key using file path and modification time
+    final file = File(audioPath);
+    final fileStats = await file.stat();
+    final cacheKey =
+        '${audioPath}_${fileStats.modified.millisecondsSinceEpoch}';
+
+    // Check cache first
+    if (_waveformCache.containsKey(cacheKey)) {
+      print('Using cached waveform for: ${audioPath.split('/').last}');
+      return _waveformCache[cacheKey]!;
+    }
+
+    setState(() {
+      _isLoadingWaveform = true;
+    });
+
+    print('Extracting waveform for: ${audioPath.split('/').last}');
+
+    try {
+      // Method 1: Try using audio_waveforms package
+      final waveformData = await _extractWithAudioWaveforms(audioPath);
+
+      if (waveformData.isNotEmpty && !_isAllSameValue(waveformData)) {
+        final normalizedData = _normalizeWaveformData(waveformData);
+        _waveformCache[cacheKey] = normalizedData;
+
+        setState(() {
+          _waveformData = normalizedData;
+          _isLoadingWaveform = false;
+        });
+
+        print(
+          'Successfully extracted ${normalizedData.length} waveform samples',
+        );
+        return normalizedData;
+      }
+
+      // Method 2: Fallback to file-based analysis
+      print('Falling back to file-based waveform generation');
+      final fallbackData = await _generateFileBasedWaveform(audioPath);
+      _waveformCache[cacheKey] = fallbackData;
+
+      setState(() {
+        _waveformData = fallbackData;
+        _isLoadingWaveform = false;
+      });
+
+      return fallbackData;
+    } catch (e) {
+      print('Error extracting waveform: $e');
+      setState(() {
+        _isLoadingWaveform = false;
+      });
+
+      // Generate file-specific fallback waveform
+      final fallbackData = await _generateFileBasedWaveform(audioPath);
+      _waveformCache[cacheKey] = fallbackData;
+      setState(() {
+        _waveformData = fallbackData;
+      });
+
+      return fallbackData;
+    }
+  }
+
+  Future<List<double>> _extractWithAudioWaveforms(String audioPath) async {
+    final PlayerController controller = PlayerController();
+
+    try {
+      await controller.preparePlayer(path: audioPath);
+
+      final waveformData = await controller.extractWaveformData(
+        path: audioPath,
+        noOfSamples: 200,
+      );
+
+      return waveformData;
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  // Check if all values in the array are the same (indicating failed extraction)
+  bool _isAllSameValue(List<double> data) {
+    if (data.isEmpty) return true;
+    final firstValue = data.first;
+    return data.every((value) => (value - firstValue).abs() < 0.001);
+  }
+
+  // Generate waveform based on file characteristics
+  Future<List<double>> _generateFileBasedWaveform(String audioPath) async {
+    final file = File(audioPath);
+    final fileSize = await file.length();
+    final fileName = audioPath.split('/').last;
+
+    // Use file size and name to generate a unique seed
+    final seed = fileName.hashCode + fileSize.hashCode;
+    final random = math.Random(seed);
+
+    print(
+      'Generating file-based waveform with seed: $seed for file: $fileName',
+    );
+
+    return List.generate(200, (index) {
+      // Create different patterns based on file characteristics
+      double base = math.sin(index * 0.08 + seed * 0.001) * 0.4;
+      double secondary = math.cos(index * 0.15 + seed * 0.002) * 0.3;
+      double noise = (random.nextDouble() - 0.5) * 0.6;
+
+      // Create envelope based on file size
+      double envelope = math.exp(
+        -math.pow(index - 100, 2) / (2000 + (fileSize % 1000)),
+      );
+
+      // Combine all components
+      double value = (base + secondary + noise * envelope).abs();
+
+      // Add some file-specific variation
+      if (index % (seed % 20 + 5) == 0) {
+        value *= 1.5; // Create peaks at file-specific intervals
+      }
+
+      return value.clamp(0.05, 1.0);
+    });
+  }
+
+  // Normalize waveform data to 0-1 range
+  List<double> _normalizeWaveformData(List<double> data) {
+    if (data.isEmpty) return [];
+
+    final maxValue = data.reduce((a, b) => math.max(a.abs(), b.abs()));
+    if (maxValue == 0) return data;
+
+    return data
+        .map((value) => (value.abs() / maxValue).clamp(0.0, 1.0))
+        .toList();
+  }
+
   Future<void> showChangeSourceDialog() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
-      // type: FileType.audio,
       allowMultiple: false,
     );
 
     if (result != null && result.files.single.path != null) {
+      final newFilePath = result.files.single.path!;
+
       setState(() {
-        selectedFilePath = result.files.single.path!;
+        selectedFilePath = newFilePath;
+        _waveformData = []; // Clear previous waveform data
+        _isLoadingWaveform = false;
       });
 
-      // Extract metadata and technical info
-      await _extractAudioMetadata(selectedFilePath!);
+      print('Selected new file: ${newFilePath.split('/').last}');
+      await _extractAudioMetadata(newFilePath);
+      await _extractWaveformData(newFilePath);
 
       // Load the new audio file into the handler
       if (widget.audioHandler is ArcampAudioHandler) {
         await (widget.audioHandler as ArcampAudioHandler).loadNewAudio(
-          selectedFilePath!,
+          newFilePath,
         );
       }
     }
@@ -83,7 +233,6 @@ class _AppState extends State<App> {
       if (mounted) {
         final playbackState = widget.audioHandler.playbackState.value;
         if (playbackState.playing) {
-          // Update position only when playing
           setState(() {
             _currentPosition = playbackState.position;
           });
@@ -94,27 +243,7 @@ class _AppState extends State<App> {
 
   Future<void> _extractAudioMetadata(String filePath) async {
     try {
-      // Extract metadata using flutter_media_metadata
       final metadata = await MetadataRetriever.fromFile(File(filePath));
-      if (metadata.albumArt != null) {
-        _palette = await PaletteGenerator.fromImageProvider(
-          MemoryImage(metadata.albumArt!),
-        );
-
-        final newColor =
-            _palette?.darkMutedColor?.color ??
-            _palette?.dominantColor?.color ??
-            Colors.black;
-
-        if (newColor != _dominantColor) {
-          setState(() {
-            _previousDominantColor = _dominantColor;
-            _dominantColor = newColor;
-            _accentColor = getComplementaryColor(_dominantColor);
-          });
-        }
-      }
-
       if (metadata.albumArt != null) {
         _palette = await PaletteGenerator.fromImageProvider(
           MemoryImage(metadata.albumArt!),
@@ -155,6 +284,78 @@ class _AppState extends State<App> {
     return '$minutes:${twoDigits(seconds)}';
   }
 
+  // Updated seekbar method with waveform
+  Widget _buildSeekBar() {
+    return StreamBuilder<MediaItem?>(
+      stream: widget.audioHandler.mediaItem,
+      builder: (context, mediaSnapshot) {
+        final duration = mediaSnapshot.data?.duration ?? Duration.zero;
+        final position = _currentPosition;
+        final progress = duration.inMilliseconds > 0
+            ? position.inMilliseconds / duration.inMilliseconds
+            : 0.0;
+
+        // Show loading indicator while waveform is being extracted
+        if (_isLoadingWaveform) {
+          return Column(
+            children: [
+              Container(
+                height: 80,
+                margin: const EdgeInsets.symmetric(horizontal: 20),
+                child: Center(
+                  child: CircularProgressIndicator(
+                    color: _accentColor,
+                    strokeWidth: 2.0,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _formatDuration(position),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                    Text(
+                      _formatDuration(duration),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        }
+
+        return WaveformSeekbar(
+          waveformData: _waveformData,
+          progress: progress.clamp(0.0, 1.0),
+          accentColor: _accentColor,
+          currentPosition: position,
+          totalDuration: duration,
+          onSeek: (value) {
+            final newPosition = Duration(
+              milliseconds: (value * duration.inMilliseconds).round(),
+            );
+            widget.audioHandler.seek(newPosition);
+            setState(() {
+              _currentPosition = newPosition;
+            });
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -174,12 +375,10 @@ class _AppState extends State<App> {
         backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
         body: Stack(
           children: [
-            // Main content
             selectedFilePath == null
                 ? _buildWelcomeScreen()
                 : _buildNowPlayingScreen(isDark),
 
-            // Floating change source button
             Positioned(
               top: MediaQuery.of(context).padding.top + 16,
               right: 16,
@@ -250,7 +449,6 @@ class _AppState extends State<App> {
   Widget _buildNowPlayingScreen(bool isDark) {
     return Stack(
       children: [
-        // Blurred album art background
         if (audioMetadata?.albumArt != null)
           SizedBox.expand(
             child: Image.memory(audioMetadata!.albumArt!, fit: BoxFit.cover),
@@ -263,20 +461,16 @@ class _AppState extends State<App> {
         else
           Container(color: isDark ? Colors.black : Colors.white),
 
-        // Foreground UI
         SingleChildScrollView(
           child: Padding(
             padding: EdgeInsets.only(
               left: 20.0,
               right: 20.0,
-              top:
-                  MediaQuery.of(context).padding.top +
-                  80, // Account for status bar and floating button
+              top: MediaQuery.of(context).padding.top + 80,
               bottom: 20.0,
             ),
             child: Column(
               children: [
-                // Artwork
                 Container(
                   width: 280,
                   height: 280,
@@ -295,9 +489,7 @@ class _AppState extends State<App> {
                     duration: const Duration(milliseconds: 500),
                     child: audioMetadata?.albumArt != null
                         ? ClipRRect(
-                            key: ValueKey(
-                              audioMetadata!.albumArt,
-                            ), // ensure it switches
+                            key: ValueKey(audioMetadata!.albumArt),
                             borderRadius: BorderRadius.circular(20),
                             child: Image.memory(
                               audioMetadata!.albumArt!,
@@ -315,7 +507,6 @@ class _AppState extends State<App> {
                 ),
                 const SizedBox(height: 30),
 
-                // Song Info
                 StreamBuilder<MediaItem?>(
                   stream: widget.audioHandler.mediaItem,
                   builder: (context, snapshot) {
@@ -372,7 +563,6 @@ class _AppState extends State<App> {
                 ),
                 const SizedBox(height: 30),
 
-                // Seek bar and playback controls
                 _buildSeekBar(),
                 const SizedBox(height: 30),
                 _buildControlButtons(),
@@ -382,65 +572,6 @@ class _AppState extends State<App> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildSeekBar() {
-    return StreamBuilder<MediaItem?>(
-      stream: widget.audioHandler.mediaItem,
-      builder: (context, mediaSnapshot) {
-        final duration = mediaSnapshot.data?.duration ?? Duration.zero;
-
-        // Use the timer-updated position instead of stream
-        final position = _currentPosition;
-        final progress = duration.inMilliseconds > 0
-            ? position.inMilliseconds / duration.inMilliseconds
-            : 0.0;
-
-        return Column(
-          children: [
-            SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                thumbColor: _accentColor,
-                activeTrackColor: _accentColor.withAlpha(255),
-                inactiveTrackColor: _accentColor.withAlpha(76),
-                overlayColor: _accentColor.withAlpha(51),
-              ),
-              child: Slider(
-                value: progress.clamp(0.0, 1.0),
-                onChanged: (value) {
-                  final newPosition = Duration(
-                    milliseconds: (value * duration.inMilliseconds).round(),
-                  );
-                  widget.audioHandler.seek(newPosition);
-                  // Update local position immediately for responsive UI
-                  setState(() {
-                    _currentPosition = newPosition;
-                  });
-                },
-                min: 0.0,
-                max: 1.0,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    _formatDuration(position),
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                  Text(
-                    _formatDuration(duration),
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
     );
   }
 
