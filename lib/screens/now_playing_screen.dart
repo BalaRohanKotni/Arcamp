@@ -5,6 +5,8 @@ import 'package:arcamp/services/arcamp_audio_handler.dart';
 import 'package:arcamp/components/waveform_seekbar.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_waveforms/audio_waveforms.dart'; // Add this import
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
@@ -446,6 +448,257 @@ class _AppState extends State<App> {
     );
   }
 
+  Future<int?> getBitDepthWithFFprobe(String filePath) async {
+    try {
+      // Method 1: Try bits_per_sample first
+
+      final extension = filePath.toLowerCase().split('.').last;
+      if (extension == 'm4a') {
+        // Check if it's AAC (lossy) or ALAC (lossless)
+        final codecSession = await FFprobeKit.execute(
+          '-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
+        );
+        final codecOutput = await codecSession.getOutput();
+        print('M4A codec check: $codecOutput');
+
+        if (codecOutput != null && codecOutput.trim().toLowerCase() == 'aac') {
+          print('M4A file contains AAC (lossy) - skipping bit depth detection');
+          return null;
+        }
+        // If it's ALAC or other lossless codec in M4A, continue with detection
+        print(
+          'M4A file contains lossless codec - proceeding with bit depth detection',
+        );
+      } else if (['mp3', 'aac', 'ogg', 'opus'].contains(extension)) {
+        // These are always lossy formats
+        print('Skipping bit depth detection for lossy format: $extension');
+        return null;
+      }
+
+      var session = await FFprobeKit.execute(
+        '-v error -select_streams a:0 -show_entries stream=bits_per_sample -of default=noprint_wrappers=1:nokey=1 "$filePath"',
+      );
+      var output = await session.getOutput();
+      print('FFprobe bits_per_sample output: $output');
+
+      if (output != null &&
+          output.trim().isNotEmpty &&
+          output.trim() != 'N/A') {
+        final bitDepth = int.tryParse(output.trim());
+        if (bitDepth != null && bitDepth > 0) {
+          print('Found bit depth via bits_per_sample: $bitDepth');
+          return bitDepth;
+        }
+      }
+
+      // Method 2: Try bits_per_raw_sample
+      session = await FFprobeKit.execute(
+        '-v error -select_streams a:0 -show_entries stream=bits_per_raw_sample -of default=noprint_wrappers=1:nokey=1 "$filePath"',
+      );
+      output = await session.getOutput();
+      print('FFprobe bits_per_raw_sample output: $output');
+
+      if (output != null &&
+          output.trim().isNotEmpty &&
+          output.trim() != 'N/A') {
+        final bitDepth = int.tryParse(output.trim());
+        if (bitDepth != null && bitDepth > 0) {
+          print('Found bit depth via bits_per_raw_sample: $bitDepth');
+          return bitDepth;
+        }
+      }
+
+      // Method 3: Parse from codec info
+      session = await FFprobeKit.execute(
+        '-v error -select_streams a:0 -show_entries stream=codec_name,sample_fmt -of default=noprint_wrappers=1 "$filePath"',
+      );
+      output = await session.getOutput();
+      print('FFprobe codec info output: $output');
+
+      if (output != null) {
+        final bitDepth = _parseBitDepthFromFormat(output);
+        if (bitDepth != null) {
+          print('Found bit depth via codec parsing: $bitDepth');
+          return bitDepth;
+        }
+      }
+
+      // Method 4: Get detailed stream info and parse manually
+      session = await FFprobeKit.execute(
+        '-v error -show_streams -select_streams a:0 "$filePath"',
+      );
+      output = await session.getOutput();
+      print('FFprobe detailed stream info: $output');
+
+      if (output != null) {
+        final bitDepth = _parseDetailedStreamInfo(output);
+        if (bitDepth != null) {
+          print('Found bit depth via detailed parsing: $bitDepth');
+          return bitDepth;
+        }
+      }
+
+      print('Could not determine bit depth for file: $filePath');
+      return null;
+    } catch (e) {
+      print('Error getting bit depth: $e');
+      return null;
+    }
+  }
+
+  int? _parseBitDepthFromFormat(String formatInfo) {
+    // Common sample format to bit depth mappings
+    final formatMap = {
+      's16': 16,
+      's16p': 16,
+      's24': 24,
+      's24p': 24,
+      's32': 32,
+      's32p': 32,
+      'fltp': 32, // 32-bit float
+      'dblp': 64, // 64-bit double (rare)
+      'u8': 8,
+      'u8p': 8,
+    };
+
+    for (final entry in formatMap.entries) {
+      if (formatInfo.toLowerCase().contains(entry.key)) {
+        return entry.value;
+      }
+    }
+
+    return null;
+  }
+
+  int? _parseDetailedStreamInfo(String streamInfo) {
+    // Look for various bit depth indicators in the detailed stream info
+    final lines = streamInfo.split('\n');
+
+    for (final line in lines) {
+      final cleanLine = line.trim().toLowerCase();
+
+      // Look for bits_per_sample
+      if (cleanLine.startsWith('bits_per_sample=')) {
+        final value = cleanLine.split('=')[1];
+        final bitDepth = int.tryParse(value);
+        if (bitDepth != null && bitDepth > 0) return bitDepth;
+      }
+
+      // Look for bits_per_raw_sample
+      if (cleanLine.startsWith('bits_per_raw_sample=')) {
+        final value = cleanLine.split('=')[1];
+        final bitDepth = int.tryParse(value);
+        if (bitDepth != null && bitDepth > 0) return bitDepth;
+      }
+
+      // Look for sample_fmt and parse it
+      if (cleanLine.startsWith('sample_fmt=')) {
+        final format = cleanLine.split('=')[1];
+        final bitDepth = _parseBitDepthFromFormat(format);
+        if (bitDepth != null) return bitDepth;
+      }
+    }
+
+    return null;
+  }
+
+  Future<String?> getCodecWithFFprobe(String filePath) async {
+    try {
+      final session = await FFprobeKit.execute(
+        '-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
+      );
+      final output = await session.getOutput();
+      print('FFprobe codec output: $output');
+
+      if (output != null &&
+          output.trim().isNotEmpty &&
+          output.trim() != 'N/A') {
+        return output.trim();
+      }
+      return null;
+    } catch (e) {
+      print('Error getting codec: $e');
+      return null;
+    }
+  }
+
+  String _formatCodecName(String? codec) {
+    if (codec == null) return 'Unknown';
+
+    // Map technical codec names to user-friendly names
+    final codecMap = {
+      'aac': 'AAC',
+      'mp3': 'MP3',
+      'mp3float': 'MP3',
+      'flac': 'FLAC',
+      'alac': 'ALAC',
+      'pcm_s16le': 'PCM',
+      'pcm_s24le': 'PCM',
+      'pcm_s32le': 'PCM',
+      'pcm_f32le': 'PCM',
+      'vorbis': 'Vorbis',
+      'opus': 'Opus',
+      'dts': 'DTS',
+      'ac3': 'AC3',
+      'eac3': 'E-AC3',
+      'wmav2': 'WMA',
+      'ape': 'APE',
+      'wavpack': 'WavPack',
+      'musepack8': 'Musepack',
+      'tta': 'TTA',
+    };
+
+    final lowerCodec = codec.toLowerCase();
+    return codecMap[lowerCodec] ?? codec.toUpperCase();
+  }
+
+  Future<Map> getAudioTechnicalInfo(String filePath) async {
+    final session = await FFmpegKit.execute('-i "$filePath"');
+    final logs = await session.getAllLogs();
+
+    int? sampleRate;
+    int? bitrate;
+    String? codec;
+
+    final sampleRateRegex = RegExp(r'(\d{4,5})\s*Hz');
+    final bitrateRegex = RegExp(r'Audio:.*?(\d+)\s*kb/s');
+    final codecRegex = RegExp(r'Audio:\s*([^,\s]+)');
+
+    Map<String, dynamic> def = {};
+
+    for (final log in logs) {
+      final msg = log.getMessage();
+      if (sampleRate == null) {
+        final match = sampleRateRegex.firstMatch(msg);
+        if (match != null) {
+          sampleRate = int.tryParse(match.group(1)!);
+        }
+      }
+
+      if (bitrate == null) {
+        final match = bitrateRegex.firstMatch(msg);
+        if (match != null) {
+          bitrate = int.tryParse(match.group(1)!);
+        }
+      }
+      if (codec == null) {
+        final match = codecRegex.firstMatch(msg);
+        if (match != null) {
+          codec = match.group(1);
+        }
+      }
+    }
+    codec ??= await getCodecWithFFprobe(filePath);
+    def['samplingRate'] = (sampleRate ?? 0) / 1000;
+    def['bitrate'] = bitrate ?? 0.0;
+    def['bitDepth'] = await getBitDepthWithFFprobe(filePath);
+    def['codec'] = codec;
+
+    print("asdf\nasddd\nasdfffff");
+    print(def);
+    return def;
+  }
+
   Widget _buildNowPlayingScreen(bool isDark) {
     return Stack(
       children: [
@@ -565,6 +818,8 @@ class _AppState extends State<App> {
 
                 _buildSeekBar(),
                 const SizedBox(height: 30),
+                _buildAudioTechnicalInfoRow(),
+                const SizedBox(height: 30),
                 _buildControlButtons(),
                 const SizedBox(height: 40),
               ],
@@ -572,6 +827,38 @@ class _AppState extends State<App> {
           ),
         ),
       ],
+    );
+  }
+
+  FutureBuilder<Map<dynamic, dynamic>> _buildAudioTechnicalInfoRow() {
+    return FutureBuilder(
+      future: getAudioTechnicalInfo(audioMetadata!.filePath!),
+      builder: (ctxt, snapshot) {
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            if (snapshot.data!['codec'] != null)
+              Text(
+                _formatCodecName(snapshot.data!['codec']),
+                style: const TextStyle(fontSize: 14, color: Colors.white54),
+              ),
+            Text(
+              "${snapshot.data!['bitrate']} kbps",
+              style: TextStyle(fontSize: 14, color: Colors.white54),
+            ),
+            Text(
+              "${snapshot.data!['samplingRate']} kHz",
+              style: TextStyle(fontSize: 14, color: Colors.white54),
+            ),
+
+            if (snapshot.data!['bitDepth'] != null)
+              Text(
+                "${snapshot.data!['bitDepth']}-bit",
+                style: const TextStyle(fontSize: 14, color: Colors.white54),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -586,7 +873,7 @@ class _AppState extends State<App> {
             IconButton(
               onPressed: () {},
               icon: const Icon(Icons.skip_previous),
-              iconSize: 40,
+              iconSize: 32,
               color: _accentColor,
             ),
             Container(
@@ -609,14 +896,14 @@ class _AppState extends State<App> {
                   isPlaying ? Icons.pause : Icons.play_arrow,
                   color: _dominantColor,
                 ),
-                iconSize: 50,
+                iconSize: 40,
                 padding: const EdgeInsets.all(20),
               ),
             ),
             IconButton(
               onPressed: () {},
               icon: const Icon(Icons.skip_next),
-              iconSize: 40,
+              iconSize: 32,
               color: _accentColor,
             ),
           ],
