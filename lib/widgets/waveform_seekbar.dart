@@ -1,5 +1,5 @@
 // ignore_for_file: avoid_print
-import 'package:arcamp/components/waveform_painter.dart';
+import 'package:arcamp/widgets/waveform_painter.dart';
 import 'package:flutter/material.dart';
 
 class WaveformSeekbar extends StatefulWidget {

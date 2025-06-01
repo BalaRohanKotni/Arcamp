@@ -1,18 +1,22 @@
 // ignore_for_file: avoid_print
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:arcamp/services/arcamp_audio_handler.dart';
-import 'package:arcamp/components/waveform_seekbar.dart';
+import 'package:arcamp/widgets/audio_control_buttons.dart';
+import 'package:arcamp/widgets/audio_info_row.dart';
+import 'package:arcamp/widgets/seek_bar.dart';
 import 'package:audio_service/audio_service.dart';
-import 'package:audio_waveforms/audio_waveforms.dart'; // Add this import
+import 'package:audio_waveforms/audio_waveforms.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'dart:io';
 import 'dart:math' as math;
-
 import 'package:palette_generator/palette_generator.dart';
 
 class App extends StatefulWidget {
@@ -52,6 +56,18 @@ class _AppState extends State<App> {
     super.dispose();
   }
 
+  Color _getTextColor(bool isDark, {double opacity = 1.0}) {
+    if (audioMetadata?.albumArt != null) {
+      // When album art is present, always use white text (as before)
+      return Colors.white.withAlpha((opacity * 255).round());
+    } else {
+      // When no album art, use appropriate color for the theme
+      return isDark
+          ? Colors.white.withAlpha((opacity * 255).round())
+          : Colors.black.withAlpha((opacity * 255).round());
+    }
+  }
+
   Color getComplementaryColor(Color color) {
     HSLColor hsl = HSLColor.fromColor(color);
     if (hsl.lightness < 0.5) {
@@ -61,87 +77,37 @@ class _AppState extends State<App> {
     }
   }
 
-  // Extract waveform data from audio file
-  Future<List<double>> _extractWaveformData(String audioPath) async {
-    // Create a unique cache key using file path and modification time
-    final file = File(audioPath);
-    final fileStats = await file.stat();
-    final cacheKey =
-        '${audioPath}_${fileStats.modified.millisecondsSinceEpoch}';
-
-    // Check cache first
-    if (_waveformCache.containsKey(cacheKey)) {
-      print('Using cached waveform for: ${audioPath.split('/').last}');
-      return _waveformCache[cacheKey]!;
+  Future<String?> _convertFlacToWav(String flacPath) async {
+    final wavPath = '${flacPath}_temp.wav';
+    final session = await FFmpegKit.execute(
+      '-y -i "$flacPath" -ac 1 -ar 44100 -f wav "$wavPath"',
+    );
+    final returnCode = await session.getReturnCode();
+    if (ReturnCode.isSuccess(returnCode)) {
+      return wavPath;
     }
-
-    setState(() {
-      _isLoadingWaveform = true;
-    });
-
-    print('Extracting waveform for: ${audioPath.split('/').last}');
-
-    try {
-      // Method 1: Try using audio_waveforms package
-      final waveformData = await _extractWithAudioWaveforms(audioPath);
-
-      if (waveformData.isNotEmpty && !_isAllSameValue(waveformData)) {
-        final normalizedData = _normalizeWaveformData(waveformData);
-        _waveformCache[cacheKey] = normalizedData;
-
-        setState(() {
-          _waveformData = normalizedData;
-          _isLoadingWaveform = false;
-        });
-
-        print(
-          'Successfully extracted ${normalizedData.length} waveform samples',
-        );
-        return normalizedData;
-      }
-
-      // Method 2: Fallback to file-based analysis
-      print('Falling back to file-based waveform generation');
-      final fallbackData = await _generateFileBasedWaveform(audioPath);
-      _waveformCache[cacheKey] = fallbackData;
-
-      setState(() {
-        _waveformData = fallbackData;
-        _isLoadingWaveform = false;
-      });
-
-      return fallbackData;
-    } catch (e) {
-      print('Error extracting waveform: $e');
-      setState(() {
-        _isLoadingWaveform = false;
-      });
-
-      // Generate file-specific fallback waveform
-      final fallbackData = await _generateFileBasedWaveform(audioPath);
-      _waveformCache[cacheKey] = fallbackData;
-      setState(() {
-        _waveformData = fallbackData;
-      });
-
-      return fallbackData;
-    }
+    return null;
   }
 
   Future<List<double>> _extractWithAudioWaveforms(String audioPath) async {
-    final PlayerController controller = PlayerController();
+    PlayerController? controller;
 
     try {
+      controller = PlayerController();
       await controller.preparePlayer(path: audioPath);
 
       final waveformData = await controller.extractWaveformData(
         path: audioPath,
-        noOfSamples: 200,
+        noOfSamples: 300,
       );
 
       return waveformData;
+    } catch (e) {
+      print('Error in _extractWithAudioWaveforms: $e');
+      return [];
     } finally {
-      controller.dispose();
+      // Ensure controller is always disposed
+      controller?.dispose();
     }
   }
 
@@ -166,7 +132,7 @@ class _AppState extends State<App> {
       'Generating file-based waveform with seed: $seed for file: $fileName',
     );
 
-    return List.generate(200, (index) {
+    return List.generate(300, (index) {
       // Create different patterns based on file characteristics
       double base = math.sin(index * 0.08 + seed * 0.001) * 0.4;
       double secondary = math.cos(index * 0.15 + seed * 0.002) * 0.3;
@@ -201,6 +167,129 @@ class _AppState extends State<App> {
         .toList();
   }
 
+  Future<List<double>> _extractWaveformData(String audioPath) async {
+    // Create a unique cache key using file path and modification time
+    final file = File(audioPath);
+    final fileStats = await file.stat();
+
+    // Store the original path for cache key (before any conversion)
+    final originalPath = audioPath;
+    String actualAudioPath = audioPath;
+
+    // Handle FLAC conversion
+    if (audioPath.toLowerCase().endsWith('.flac')) {
+      final wavPath = await _convertFlacToWav(audioPath);
+      if (wavPath != null) {
+        actualAudioPath = wavPath; // Use WAV path for processing
+        print('Converted FLAC to WAV: $wavPath');
+      } else {
+        print('Failed to convert FLAC to WAV');
+      }
+    }
+
+    // Use original file path for cache key to ensure consistency
+    final cacheKey =
+        '${originalPath}_${fileStats.modified.millisecondsSinceEpoch}';
+
+    // Check cache first
+    if (_waveformCache.containsKey(cacheKey)) {
+      print('Using cached waveform for: ${originalPath.split('/').last}');
+      final cachedData = _waveformCache[cacheKey]!;
+
+      // Update UI state with cached data
+      setState(() {
+        _waveformData = cachedData;
+        _isLoadingWaveform = false;
+      });
+
+      return cachedData;
+    }
+
+    setState(() {
+      _isLoadingWaveform = true;
+    });
+
+    print('Extracting waveform for: ${originalPath.split('/').last}');
+
+    try {
+      // Method 1: Try using audio_waveforms package
+      final waveformData = await _extractWithAudioWaveforms(actualAudioPath);
+
+      if (waveformData.isNotEmpty && !_isAllSameValue(waveformData)) {
+        final normalizedData = _normalizeWaveformData(waveformData);
+        _waveformCache[cacheKey] = normalizedData;
+
+        setState(() {
+          _waveformData = normalizedData;
+          _isLoadingWaveform = false;
+        });
+
+        print(
+          'Successfully extracted ${normalizedData.length} waveform samples',
+        );
+
+        // Clean up temporary WAV file if it was created
+        if (actualAudioPath != originalPath) {
+          _cleanupTempFile(actualAudioPath);
+        }
+
+        return normalizedData;
+      }
+
+      // Method 2: Fallback to file-based analysis
+      print('Falling back to file-based waveform generation');
+      final fallbackData = await _generateFileBasedWaveform(
+        originalPath,
+      ); // Use original path for consistency
+      _waveformCache[cacheKey] = fallbackData;
+
+      setState(() {
+        _waveformData = fallbackData;
+        _isLoadingWaveform = false;
+      });
+
+      // Clean up temporary WAV file if it was created
+      if (actualAudioPath != originalPath) {
+        _cleanupTempFile(actualAudioPath);
+      }
+
+      return fallbackData;
+    } catch (e) {
+      print('Error extracting waveform: $e');
+      setState(() {
+        _isLoadingWaveform = false;
+      });
+
+      // Generate file-specific fallback waveform
+      final fallbackData = await _generateFileBasedWaveform(
+        originalPath,
+      ); // Use original path for consistency
+      _waveformCache[cacheKey] = fallbackData;
+      setState(() {
+        _waveformData = fallbackData;
+      });
+
+      // Clean up temporary WAV file if it was created
+      if (actualAudioPath != originalPath) {
+        _cleanupTempFile(actualAudioPath);
+      }
+
+      return fallbackData;
+    }
+  }
+
+  void _cleanupTempFile(String tempFilePath) {
+    try {
+      final tempFile = File(tempFilePath);
+      if (tempFile.existsSync()) {
+        tempFile.deleteSync();
+        print('Cleaned up temporary file: ${tempFilePath.split('/').last}');
+      }
+    } catch (e) {
+      print('Warning: Could not delete temporary file $tempFilePath: $e');
+    }
+  }
+
   Future<void> showChangeSourceDialog() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       allowMultiple: false,
@@ -211,12 +300,16 @@ class _AppState extends State<App> {
 
       setState(() {
         selectedFilePath = newFilePath;
-        _waveformData = []; // Clear previous waveform data
+        // Don't clear waveform data here - let the extraction method handle it
         _isLoadingWaveform = false;
       });
 
       print('Selected new file: ${newFilePath.split('/').last}');
+
+      // Extract metadata first
       await _extractAudioMetadata(newFilePath);
+
+      // Then extract waveform data
       await _extractWaveformData(newFilePath);
 
       // Load the new audio file into the handler
@@ -243,12 +336,176 @@ class _AppState extends State<App> {
     });
   }
 
+  bool _isMetadataIncomplete(Metadata? metadata) {
+    if (metadata == null) return true;
+
+    return (metadata.trackName == null || metadata.trackName!.isEmpty) ||
+        (metadata.trackArtistNames == null ||
+            metadata.trackArtistNames!.isEmpty) ||
+        (metadata.albumName == null || metadata.albumName!.isEmpty);
+  }
+
+  // Extract metadata using FFprobe as fallback
+  Future<Metadata?> _extractMetadataWithFFprobe(String filePath) async {
+    try {
+      print('Extracting FLAC metadata with FFprobe...');
+
+      // Add -v quiet to suppress verbose output
+      final session = await FFprobeKit.execute(
+        '-v quiet -print_format json -show_format -show_streams "$filePath"',
+      );
+
+      final output = await session.getOutput();
+      if (output == null || output.isEmpty) {
+        print('No FFprobe output received');
+        return null;
+      }
+
+      // Parse JSON output
+      final Map<String, dynamic> jsonData = json.decode(output);
+      final format = jsonData['format'] as Map<String, dynamic>?;
+      final tags = format?['tags'] as Map<String, dynamic>?;
+
+      if (tags == null) {
+        print('No tags found in FFprobe output');
+        return null;
+      }
+
+      // ... rest of your existing code remains the same
+      // Extract metadata from tags
+      String? trackName = _getTagValue(tags, ['TITLE', 'title']);
+      String? artist = _getTagValue(tags, [
+        'ARTIST',
+        'artist',
+        'ALBUMARTIST',
+        'album_artist',
+      ]);
+      String? album = _getTagValue(tags, ['ALBUM', 'album']);
+      String? albumArtist = _getTagValue(tags, [
+        'ALBUMARTIST',
+        'album_artist',
+        'ARTIST',
+        'artist',
+      ]);
+      String? year = _getTagValue(tags, ['DATE', 'date', 'YEAR', 'year']);
+      String? genre = _getTagValue(tags, ['GENRE', 'genre']);
+      String? trackNumberStr = _getTagValue(tags, [
+        'TRACK',
+        'track',
+        'TRACKNUMBER',
+        'tracknumber',
+      ]);
+      String? discNumberStr = _getTagValue(tags, [
+        'DISC',
+        'disc',
+        'DISCNUMBER',
+        'discnumber',
+      ]);
+
+      // Parse numbers
+      int? trackNumber;
+      int? discNumber;
+      int? yearInt;
+
+      if (trackNumberStr != null) {
+        final trackParts = trackNumberStr.split('/');
+        trackNumber = int.tryParse(trackParts[0]);
+      }
+
+      if (discNumberStr != null) {
+        final discParts = discNumberStr.split('/');
+        discNumber = int.tryParse(discParts[0]);
+      }
+
+      if (year != null) {
+        yearInt = int.tryParse(year);
+      }
+
+      // Get duration from format
+      Duration? trackDuration;
+      final durationStr = format?['duration'] as String?;
+      if (durationStr != null) {
+        final durationSeconds = double.tryParse(durationStr);
+        if (durationSeconds != null) {
+          trackDuration = Duration(
+            milliseconds: (durationSeconds * 1000).round(),
+          );
+        }
+      }
+
+      print('FFprobe extracted metadata:');
+      print('Title: $trackName');
+      print('Artist: $artist');
+      print('Album: $album');
+      print('Year: $year');
+      print('Genre: $genre');
+
+      return Metadata(
+        trackName: trackName,
+        trackArtistNames: artist != null ? [artist] : null,
+        albumName: album,
+        albumArtistName: albumArtist,
+        trackNumber: trackNumber,
+        year: yearInt,
+        genre: genre,
+        discNumber: discNumber,
+        trackDuration: trackDuration?.inSeconds,
+        filePath: filePath,
+      );
+    } catch (e) {
+      print('Error extracting metadata with FFprobe: $e');
+      return null;
+    }
+  }
+
+  // Helper to get tag value with case-insensitive fallbacks
+  String? _getTagValue(Map<String, dynamic> tags, List<String> keys) {
+    for (final key in keys) {
+      // Try exact match first
+      if (tags.containsKey(key) && tags[key] != null) {
+        return tags[key].toString().trim();
+      }
+
+      // Try case-insensitive match
+      for (final tagKey in tags.keys) {
+        if (tagKey.toLowerCase() == key.toLowerCase() && tags[tagKey] != null) {
+          return tags[tagKey].toString().trim();
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _extractAudioMetadata(String filePath) async {
     try {
+      // First, try the existing flutter_media_metadata approach
       final metadata = await MetadataRetriever.fromFile(File(filePath));
-      if (metadata.albumArt != null) {
+
+      // For FLAC files, also try FFprobe as a fallback
+      final fileExtension = filePath.toLowerCase().split('.').last;
+      Metadata? enhancedMetadata;
+
+      if (fileExtension == 'flac' && _isMetadataIncomplete(metadata)) {
+        print(
+          'FLAC detected with incomplete metadata, trying FFprobe fallback...',
+        );
+        enhancedMetadata = await _extractMetadataWithFFprobe(filePath);
+
+        // Merge the metadata, preferring FFprobe results for missing fields
+        enhancedMetadata = _mergeMetadata(metadata, enhancedMetadata);
+      } else {
+        enhancedMetadata = metadata;
+      }
+
+      // Always set the metadata, regardless of whether album art exists
+      setState(() {
+        audioMetadata = enhancedMetadata;
+      });
+
+      // Handle album art and color extraction separately
+      if (enhancedMetadata.albumArt != null) {
         _palette = await PaletteGenerator.fromImageProvider(
-          MemoryImage(metadata.albumArt!),
+          MemoryImage(enhancedMetadata.albumArt!),
         );
 
         final newColor =
@@ -263,13 +520,156 @@ class _AppState extends State<App> {
             _accentColor = getComplementaryColor(_dominantColor);
           });
         }
-      }
+      } else {
+        // For FLAC files without embedded album art, try extracting with FFmpeg
+        if (fileExtension == 'flac') {
+          print('FLAC file without album art, trying FFmpeg extraction...');
+          final extractedArt = await _extractAlbumArtWithFFmpeg(filePath);
+          if (extractedArt != null) {
+            // Create new metadata with extracted album art
+            enhancedMetadata = Metadata(
+              trackName: enhancedMetadata.trackName,
+              trackArtistNames: enhancedMetadata.trackArtistNames,
+              albumName: enhancedMetadata.albumName,
+              albumArtistName: enhancedMetadata.albumArtistName,
+              trackNumber: enhancedMetadata.trackNumber,
+              albumLength: enhancedMetadata.albumLength,
+              year: enhancedMetadata.year,
+              genre: enhancedMetadata.genre,
+              authorName: enhancedMetadata.authorName,
+              writerName: enhancedMetadata.writerName,
+              discNumber: enhancedMetadata.discNumber,
+              mimeType: enhancedMetadata.mimeType,
+              trackDuration: enhancedMetadata.trackDuration,
+              bitrate: enhancedMetadata.bitrate,
+              albumArt: extractedArt,
+              filePath: enhancedMetadata.filePath,
+            );
 
-      setState(() {
-        audioMetadata = metadata;
-      });
+            setState(() {
+              audioMetadata = enhancedMetadata;
+            });
+
+            // Process the extracted album art for colors
+            _palette = await PaletteGenerator.fromImageProvider(
+              MemoryImage(extractedArt),
+            );
+
+            final newColor =
+                _palette?.darkMutedColor?.color ??
+                _palette?.dominantColor?.color ??
+                Colors.black;
+
+            if (newColor != _dominantColor) {
+              setState(() {
+                _previousDominantColor = _dominantColor;
+                _dominantColor = newColor;
+                _accentColor = getComplementaryColor(_dominantColor);
+              });
+            }
+          } else {
+            // Reset to default colors when no album art is present
+            setState(() {
+              _previousDominantColor = _dominantColor;
+              _dominantColor = Colors.black;
+              _accentColor = getComplementaryColor(_dominantColor);
+            });
+          }
+        } else {
+          // Reset to default colors when no album art is present
+          setState(() {
+            _previousDominantColor = _dominantColor;
+            _dominantColor = Colors.black;
+            _accentColor = getComplementaryColor(_dominantColor);
+          });
+        }
+      }
     } catch (e) {
       print('Error extracting audio metadata: $e');
+      // Even if there's an error, we should reset the metadata state
+      setState(() {
+        audioMetadata = null;
+      });
+    }
+  }
+
+  // Merge two metadata objects, preferring non-null values from the second
+  Metadata _mergeMetadata(Metadata? original, Metadata? fallback) {
+    if (original == null) return fallback ?? Metadata();
+    if (fallback == null) return original;
+
+    return Metadata(
+      trackName: fallback.trackName ?? original.trackName,
+      trackArtistNames: fallback.trackArtistNames ?? original.trackArtistNames,
+      albumName: fallback.albumName ?? original.albumName,
+      albumArtistName: fallback.albumArtistName ?? original.albumArtistName,
+      trackNumber: fallback.trackNumber ?? original.trackNumber,
+      albumLength: fallback.albumLength ?? original.albumLength,
+      year: fallback.year ?? original.year,
+      genre: fallback.genre ?? original.genre,
+      authorName: fallback.authorName ?? original.authorName,
+      writerName: fallback.writerName ?? original.writerName,
+      discNumber: fallback.discNumber ?? original.discNumber,
+      mimeType: fallback.mimeType ?? original.mimeType,
+      trackDuration: fallback.trackDuration ?? original.trackDuration,
+      bitrate: fallback.bitrate ?? original.bitrate,
+      albumArt:
+          original.albumArt ?? fallback.albumArt, // Prefer original album art
+      filePath: original.filePath ?? fallback.filePath,
+    );
+  }
+
+  // Extract album art using FFmpeg
+  Future<Uint8List?> _extractAlbumArtWithFFmpeg(String filePath) async {
+    try {
+      print('Attempting to extract album art with FFmpeg...');
+
+      final tempDir = Directory.systemTemp;
+      final tempImagePath =
+          '${tempDir.path}/temp_album_art_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+      // Add -v quiet to suppress verbose output
+      final session = await FFmpegKit.execute(
+        '-v quiet -i "$filePath" -an -vcodec copy "$tempImagePath"',
+      );
+
+      final returnCode = await session.getReturnCode();
+
+      if (ReturnCode.isSuccess(returnCode)) {
+        final imageFile = File(tempImagePath);
+        if (await imageFile.exists()) {
+          final imageBytes = await imageFile.readAsBytes();
+
+          try {
+            await imageFile.delete();
+          } catch (e) {
+            print('Warning: Could not delete temp file: $e');
+          }
+
+          print(
+            'Successfully extracted album art (${imageBytes.length} bytes)',
+          );
+          return imageBytes;
+        }
+      } else {
+        print(
+          'FFmpeg album art extraction failed with return code: $returnCode',
+        );
+      }
+
+      try {
+        final imageFile = File(tempImagePath);
+        if (await imageFile.exists()) {
+          await imageFile.delete();
+        }
+      } catch (e) {
+        print('Warning: Could not delete temp file: $e');
+      }
+
+      return null;
+    } catch (e) {
+      print('Error extracting album art with FFmpeg: $e');
+      return null;
     }
   }
 
@@ -284,78 +684,6 @@ class _AppState extends State<App> {
       return '$hours:${twoDigits(minutes)}:${twoDigits(seconds)}';
     }
     return '$minutes:${twoDigits(seconds)}';
-  }
-
-  // Updated seekbar method with waveform
-  Widget _buildSeekBar() {
-    return StreamBuilder<MediaItem?>(
-      stream: widget.audioHandler.mediaItem,
-      builder: (context, mediaSnapshot) {
-        final duration = mediaSnapshot.data?.duration ?? Duration.zero;
-        final position = _currentPosition;
-        final progress = duration.inMilliseconds > 0
-            ? position.inMilliseconds / duration.inMilliseconds
-            : 0.0;
-
-        // Show loading indicator while waveform is being extracted
-        if (_isLoadingWaveform) {
-          return Column(
-            children: [
-              Container(
-                height: 80,
-                margin: const EdgeInsets.symmetric(horizontal: 20),
-                child: Center(
-                  child: CircularProgressIndicator(
-                    color: _accentColor,
-                    strokeWidth: 2.0,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      _formatDuration(position),
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                    ),
-                    Text(
-                      _formatDuration(duration),
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          );
-        }
-
-        return WaveformSeekbar(
-          waveformData: _waveformData,
-          progress: progress.clamp(0.0, 1.0),
-          accentColor: _accentColor,
-          currentPosition: position,
-          totalDuration: duration,
-          onSeek: (value) {
-            final newPosition = Duration(
-              milliseconds: (value * duration.inMilliseconds).round(),
-            );
-            widget.audioHandler.seek(newPosition);
-            setState(() {
-              _currentPosition = newPosition;
-            });
-          },
-        );
-      },
-    );
   }
 
   @override
@@ -448,164 +776,11 @@ class _AppState extends State<App> {
     );
   }
 
-  Future<int?> getBitDepthWithFFprobe(String filePath) async {
-    try {
-      // Method 1: Try bits_per_sample first
-
-      final extension = filePath.toLowerCase().split('.').last;
-      if (extension == 'm4a') {
-        // Check if it's AAC (lossy) or ALAC (lossless)
-        final codecSession = await FFprobeKit.execute(
-          '-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-        );
-        final codecOutput = await codecSession.getOutput();
-        print('M4A codec check: $codecOutput');
-
-        if (codecOutput != null && codecOutput.trim().toLowerCase() == 'aac') {
-          print('M4A file contains AAC (lossy) - skipping bit depth detection');
-          return null;
-        }
-        // If it's ALAC or other lossless codec in M4A, continue with detection
-        print(
-          'M4A file contains lossless codec - proceeding with bit depth detection',
-        );
-      } else if (['mp3', 'aac', 'ogg', 'opus'].contains(extension)) {
-        // These are always lossy formats
-        print('Skipping bit depth detection for lossy format: $extension');
-        return null;
-      }
-
-      var session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=bits_per_sample -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-      );
-      var output = await session.getOutput();
-      print('FFprobe bits_per_sample output: $output');
-
-      if (output != null &&
-          output.trim().isNotEmpty &&
-          output.trim() != 'N/A') {
-        final bitDepth = int.tryParse(output.trim());
-        if (bitDepth != null && bitDepth > 0) {
-          print('Found bit depth via bits_per_sample: $bitDepth');
-          return bitDepth;
-        }
-      }
-
-      // Method 2: Try bits_per_raw_sample
-      session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=bits_per_raw_sample -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-      );
-      output = await session.getOutput();
-      print('FFprobe bits_per_raw_sample output: $output');
-
-      if (output != null &&
-          output.trim().isNotEmpty &&
-          output.trim() != 'N/A') {
-        final bitDepth = int.tryParse(output.trim());
-        if (bitDepth != null && bitDepth > 0) {
-          print('Found bit depth via bits_per_raw_sample: $bitDepth');
-          return bitDepth;
-        }
-      }
-
-      // Method 3: Parse from codec info
-      session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=codec_name,sample_fmt -of default=noprint_wrappers=1 "$filePath"',
-      );
-      output = await session.getOutput();
-      print('FFprobe codec info output: $output');
-
-      if (output != null) {
-        final bitDepth = _parseBitDepthFromFormat(output);
-        if (bitDepth != null) {
-          print('Found bit depth via codec parsing: $bitDepth');
-          return bitDepth;
-        }
-      }
-
-      // Method 4: Get detailed stream info and parse manually
-      session = await FFprobeKit.execute(
-        '-v error -show_streams -select_streams a:0 "$filePath"',
-      );
-      output = await session.getOutput();
-      print('FFprobe detailed stream info: $output');
-
-      if (output != null) {
-        final bitDepth = _parseDetailedStreamInfo(output);
-        if (bitDepth != null) {
-          print('Found bit depth via detailed parsing: $bitDepth');
-          return bitDepth;
-        }
-      }
-
-      print('Could not determine bit depth for file: $filePath');
-      return null;
-    } catch (e) {
-      print('Error getting bit depth: $e');
-      return null;
-    }
-  }
-
-  int? _parseBitDepthFromFormat(String formatInfo) {
-    // Common sample format to bit depth mappings
-    final formatMap = {
-      's16': 16,
-      's16p': 16,
-      's24': 24,
-      's24p': 24,
-      's32': 32,
-      's32p': 32,
-      'fltp': 32, // 32-bit float
-      'dblp': 64, // 64-bit double (rare)
-      'u8': 8,
-      'u8p': 8,
-    };
-
-    for (final entry in formatMap.entries) {
-      if (formatInfo.toLowerCase().contains(entry.key)) {
-        return entry.value;
-      }
-    }
-
-    return null;
-  }
-
-  int? _parseDetailedStreamInfo(String streamInfo) {
-    // Look for various bit depth indicators in the detailed stream info
-    final lines = streamInfo.split('\n');
-
-    for (final line in lines) {
-      final cleanLine = line.trim().toLowerCase();
-
-      // Look for bits_per_sample
-      if (cleanLine.startsWith('bits_per_sample=')) {
-        final value = cleanLine.split('=')[1];
-        final bitDepth = int.tryParse(value);
-        if (bitDepth != null && bitDepth > 0) return bitDepth;
-      }
-
-      // Look for bits_per_raw_sample
-      if (cleanLine.startsWith('bits_per_raw_sample=')) {
-        final value = cleanLine.split('=')[1];
-        final bitDepth = int.tryParse(value);
-        if (bitDepth != null && bitDepth > 0) return bitDepth;
-      }
-
-      // Look for sample_fmt and parse it
-      if (cleanLine.startsWith('sample_fmt=')) {
-        final format = cleanLine.split('=')[1];
-        final bitDepth = _parseBitDepthFromFormat(format);
-        if (bitDepth != null) return bitDepth;
-      }
-    }
-
-    return null;
-  }
-
   Future<String?> getCodecWithFFprobe(String filePath) async {
     try {
+      // Add -v quiet to suppress verbose output
       final session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
+        '-v quiet -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
       );
       final output = await session.getOutput();
       print('FFprobe codec output: $output');
@@ -650,53 +825,6 @@ class _AppState extends State<App> {
 
     final lowerCodec = codec.toLowerCase();
     return codecMap[lowerCodec] ?? codec.toUpperCase();
-  }
-
-  Future<Map> getAudioTechnicalInfo(String filePath) async {
-    final session = await FFmpegKit.execute('-i "$filePath"');
-    final logs = await session.getAllLogs();
-
-    int? sampleRate;
-    int? bitrate;
-    String? codec;
-
-    final sampleRateRegex = RegExp(r'(\d{4,5})\s*Hz');
-    final bitrateRegex = RegExp(r'Audio:.*?(\d+)\s*kb/s');
-    final codecRegex = RegExp(r'Audio:\s*([^,\s]+)');
-
-    Map<String, dynamic> def = {};
-
-    for (final log in logs) {
-      final msg = log.getMessage();
-      if (sampleRate == null) {
-        final match = sampleRateRegex.firstMatch(msg);
-        if (match != null) {
-          sampleRate = int.tryParse(match.group(1)!);
-        }
-      }
-
-      if (bitrate == null) {
-        final match = bitrateRegex.firstMatch(msg);
-        if (match != null) {
-          bitrate = int.tryParse(match.group(1)!);
-        }
-      }
-      if (codec == null) {
-        final match = codecRegex.firstMatch(msg);
-        if (match != null) {
-          codec = match.group(1);
-        }
-      }
-    }
-    codec ??= await getCodecWithFFprobe(filePath);
-    def['samplingRate'] = (sampleRate ?? 0) / 1000;
-    def['bitrate'] = bitrate ?? 0.0;
-    def['bitDepth'] = await getBitDepthWithFFprobe(filePath);
-    def['codec'] = codec;
-
-    print("asdf\nasddd\nasdfffff");
-    print(def);
-    return def;
   }
 
   Widget _buildNowPlayingScreen(bool isDark) {
@@ -754,7 +882,9 @@ class _AppState extends State<App> {
                         : Icon(
                             Icons.music_note,
                             size: 100,
-                            color: Colors.grey[400],
+                            color: isDark
+                                ? Colors.grey[400]
+                                : Colors.grey[600], // Theme-aware icon color
                           ),
                   ),
                 ),
@@ -776,15 +906,18 @@ class _AppState extends State<App> {
                         audioMetadata?.albumName ??
                         mediaItem?.album ??
                         'Unknown Album';
+                    print([title, artist, album]);
 
                     return Column(
                       children: [
                         Text(
                           title,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 24,
                             fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                            color: _getTextColor(
+                              isDark,
+                            ), // Changed from Colors.white
                           ),
                           textAlign: TextAlign.center,
                           maxLines: 2,
@@ -795,7 +928,10 @@ class _AppState extends State<App> {
                           artist,
                           style: TextStyle(
                             fontSize: 18,
-                            color: Colors.white70,
+                            color: _getTextColor(
+                              isDark,
+                              opacity: 0.7,
+                            ), // Changed from Colors.white70
                             fontWeight: FontWeight.w500,
                           ),
                           textAlign: TextAlign.center,
@@ -805,7 +941,13 @@ class _AppState extends State<App> {
                         const SizedBox(height: 4),
                         Text(
                           album,
-                          style: TextStyle(fontSize: 16, color: Colors.white54),
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: _getTextColor(
+                              isDark,
+                              opacity: 0.54,
+                            ), // Changed from Colors.white54
+                          ),
                           textAlign: TextAlign.center,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -815,100 +957,40 @@ class _AppState extends State<App> {
                   },
                 ),
                 const SizedBox(height: 30),
-
-                _buildSeekBar(),
+                SeekBarWidget(
+                  isDark: isDark,
+                  audioHandler: widget.audioHandler,
+                  waveformData: _waveformData,
+                  accentColor: _accentColor,
+                  currentPosition: _currentPosition,
+                  isLoadingWaveform: _isLoadingWaveform,
+                  onSeek: (newPosition) {
+                    widget.audioHandler.seek(newPosition);
+                    setState(() {
+                      _currentPosition = newPosition;
+                    });
+                  },
+                  formatDuration: _formatDuration,
+                  getTextColor: _getTextColor,
+                ),
                 const SizedBox(height: 30),
-                _buildAudioTechnicalInfoRow(),
+                AudioInfoRow(
+                  filePath: audioMetadata!.filePath!,
+                  getTextColor: _getTextColor,
+                  formatCodecName: _formatCodecName,
+                ),
                 const SizedBox(height: 30),
-                _buildControlButtons(),
+                AudioControlButtons(
+                  widget: widget,
+                  accentColor: _accentColor,
+                  dominantColor: _dominantColor,
+                ),
                 const SizedBox(height: 40),
               ],
             ),
           ),
         ),
       ],
-    );
-  }
-
-  FutureBuilder<Map<dynamic, dynamic>> _buildAudioTechnicalInfoRow() {
-    return FutureBuilder(
-      future: getAudioTechnicalInfo(audioMetadata!.filePath!),
-      builder: (ctxt, snapshot) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            if (snapshot.data!['codec'] != null)
-              Text(
-                _formatCodecName(snapshot.data!['codec']),
-                style: const TextStyle(fontSize: 14, color: Colors.white54),
-              ),
-            Text(
-              "${snapshot.data!['bitrate']} kbps",
-              style: TextStyle(fontSize: 14, color: Colors.white54),
-            ),
-            Text(
-              "${snapshot.data!['samplingRate']} kHz",
-              style: TextStyle(fontSize: 14, color: Colors.white54),
-            ),
-
-            if (snapshot.data!['bitDepth'] != null)
-              Text(
-                "${snapshot.data!['bitDepth']}-bit",
-                style: const TextStyle(fontSize: 14, color: Colors.white54),
-              ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildControlButtons() {
-    return StreamBuilder<PlaybackState>(
-      stream: widget.audioHandler.playbackState,
-      builder: (context, snapshot) {
-        final isPlaying = snapshot.data?.playing ?? false;
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            IconButton(
-              onPressed: () {},
-              icon: const Icon(Icons.skip_previous),
-              iconSize: 32,
-              color: _accentColor,
-            ),
-            Container(
-              decoration: BoxDecoration(
-                color: _accentColor,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: _accentColor.withAlpha(76),
-                    blurRadius: 15,
-                    offset: const Offset(0, 5),
-                  ),
-                ],
-              ),
-              child: IconButton(
-                onPressed: isPlaying
-                    ? widget.audioHandler.pause
-                    : widget.audioHandler.play,
-                icon: Icon(
-                  isPlaying ? Icons.pause : Icons.play_arrow,
-                  color: _dominantColor,
-                ),
-                iconSize: 40,
-                padding: const EdgeInsets.all(20),
-              ),
-            ),
-            IconButton(
-              onPressed: () {},
-              icon: const Icon(Icons.skip_next),
-              iconSize: 32,
-              color: _accentColor,
-            ),
-          ],
-        );
-      },
     );
   }
 }
