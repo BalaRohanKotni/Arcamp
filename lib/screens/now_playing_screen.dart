@@ -108,6 +108,7 @@ class _AppState extends State<App> {
       if (widget.audioHandler is ArcampAudioHandler) {
         await (widget.audioHandler as ArcampAudioHandler).loadNewAudio(
           newFilePath,
+          audioMetadata!,
         );
       }
     }
