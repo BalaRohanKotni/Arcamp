@@ -71,9 +71,6 @@ class ArcampAudioHandler extends BaseAudioHandler {
 
       playbackState.add(state);
     });
-
-    // Load initial audio file
-    await loadAudio();
   }
 
   Future<void> loadNewAudio(String filePath) async {
@@ -104,35 +101,6 @@ class ArcampAudioHandler extends BaseAudioHandler {
       print('New audio loaded successfully: $fileName');
     } catch (e) {
       print('Error loading new audio: $e');
-    }
-  }
-
-  Future<void> loadAudio() async {
-    try {
-      final filePath = '/Users/rohan/Music/English/Adele - Hello.flac';
-      await _player.setFilePath(filePath);
-
-      // Extract file name without extension for title
-      final fileName = filePath.split('/').last.split('.').first;
-
-      // Set media item with proper metadata
-      mediaItem.add(
-        MediaItem(
-          id: filePath,
-          title: fileName,
-          artist: 'Unknown Artist', // You can extract this from metadata later
-          album: 'Unknown Album', // You can extract this from metadata later
-          duration: _player.duration ?? Duration.zero,
-          // artUri: Uri.parse(
-          //   'https://example.com/album-art.jpg',
-          // ), // Optional album art
-          playable: true,
-        ),
-      );
-
-      print('Audio loaded successfully');
-    } catch (e) {
-      print('Error loading audio: $e');
     }
   }
 
