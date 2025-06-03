@@ -80,10 +80,16 @@ class AudioMetadataExtractor {
     try {
       print('Extracting FLAC metadata with FFprobe...');
 
-      // Add -v quiet to suppress verbose output
-      final session = await FFprobeKit.execute(
-        '-v quiet -print_format json -show_format -show_streams "$filePath"',
-      );
+      // Convert command to arguments array
+      final session = await FFprobeKit.executeWithArguments([
+        '-v',
+        'quiet',
+        '-print_format',
+        'json',
+        '-show_format',
+        '-show_streams',
+        filePath,
+      ]);
 
       final output = await session.getOutput();
       if (output == null || output.isEmpty) {
@@ -240,10 +246,17 @@ class AudioMetadataExtractor {
       final tempImagePath =
           '${tempDir.path}/temp_album_art_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-      // Add -v quiet to suppress verbose output
-      final session = await FFmpegKit.execute(
-        '-v quiet -i "$filePath" -an -vcodec copy "$tempImagePath"',
-      );
+      // Convert command to arguments array
+      final session = await FFmpegKit.executeWithArguments([
+        '-v',
+        'quiet',
+        '-i',
+        filePath,
+        '-an',
+        '-vcodec',
+        'copy',
+        tempImagePath,
+      ]);
 
       final returnCode = await session.getReturnCode();
 
@@ -287,10 +300,18 @@ class AudioMetadataExtractor {
 
   static Future<String?> getCodecWithFFprobe(String filePath) async {
     try {
-      // Add -v quiet to suppress verbose output
-      final session = await FFprobeKit.execute(
-        '-v quiet -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-      );
+      // Convert command to arguments array
+      final session = await FFprobeKit.executeWithArguments([
+        '-v',
+        'quiet',
+        '-select_streams',
+        'a:0',
+        '-show_entries',
+        'stream=codec_name',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
       final output = await session.getOutput();
       print('FFprobe codec output: $output');
 

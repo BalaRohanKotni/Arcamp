@@ -96,9 +96,18 @@ int? _parseDetailedStreamInfo(String streamInfo) {
 Future<int?> _getFlacBitDepthSpecific(String filePath) async {
   try {
     // Use ffprobe with FLAC-specific format detection
-    final session = await FFprobeKit.execute(
-      '-v error -f flac -show_streams -select_streams a:0 -print_format flat "$filePath"',
-    );
+    final session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'error',
+      '-f',
+      'flac',
+      '-show_streams',
+      '-select_streams',
+      'a:0',
+      '-print_format',
+      'flat',
+      filePath,
+    ]);
     final output = await session.getOutput();
 
     if (output != null) {
@@ -118,14 +127,19 @@ Future<int?> _getFlacBitDepthSpecific(String filePath) async {
       }
     }
 
-    // Alternative FLAC approach - use mediainfo-style output
-    final session2 = await FFprobeKit.execute(
-      '-v error -show_format -show_streams "$filePath" | grep -i "bit"',
-    );
+    // Alternative FLAC approach - cannot use grep with executeWithArguments
+    // Using regular ffprobe command instead
+    final session2 = await FFprobeKit.executeWithArguments([
+      '-v',
+      'error',
+      '-show_format',
+      '-show_streams',
+      filePath,
+    ]);
     final output2 = await session2.getOutput();
 
     if (output2 != null) {
-      print('FLAC grep output: $output2');
+      print('FLAC alternative output: $output2');
       // Parse any bit-related information
       final bitMatch = RegExp(
         r'(\d+).?bit',
@@ -155,9 +169,17 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
 
     // Handle M4A container format
     if (extension == 'm4a') {
-      final codecSession = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-      );
+      final codecSession = await FFprobeKit.executeWithArguments([
+        '-v',
+        'error',
+        '-select_streams',
+        'a:0',
+        '-show_entries',
+        'stream=codec_name',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
       final codecOutput = await codecSession.getOutput();
       print('M4A codec check: $codecOutput');
 
@@ -179,9 +201,16 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
     }
 
     // Method 1: JSON output with comprehensive stream info
-    var session = await FFprobeKit.execute(
-      '-v quiet -print_format json -show_streams -select_streams a:0 "$filePath"',
-    );
+    var session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'quiet',
+      '-print_format',
+      'json',
+      '-show_streams',
+      '-select_streams',
+      'a:0',
+      filePath,
+    ]);
     var output = await session.getOutput();
 
     if (output != null && output.trim().isNotEmpty) {
@@ -231,9 +260,17 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
     final fields = ['bits_per_sample', 'bits_per_raw_sample'];
 
     for (final field in fields) {
-      session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=$field -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-      );
+      session = await FFprobeKit.executeWithArguments([
+        '-v',
+        'error',
+        '-select_streams',
+        'a:0',
+        '-show_entries',
+        'stream=$field',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
       output = await session.getOutput();
 
       print('FFprobe $field output: "$output"');
@@ -251,9 +288,17 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
     }
 
     // Method 3: Sample format analysis
-    session = await FFprobeKit.execute(
-      '-v error -select_streams a:0 -show_entries stream=sample_fmt -of default=noprint_wrappers=1:nokey=1 "$filePath"',
-    );
+    session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'error',
+      '-select_streams',
+      'a:0',
+      '-show_entries',
+      'stream=sample_fmt',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ]);
     output = await session.getOutput();
 
     if (output != null && output.trim().isNotEmpty) {
@@ -265,9 +310,14 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
     }
 
     // Method 4: Detailed stream information parsing
-    session = await FFprobeKit.execute(
-      '-v error -show_streams -select_streams a:0 "$filePath"',
-    );
+    session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'error',
+      '-show_streams',
+      '-select_streams',
+      'a:0',
+      filePath,
+    ]);
     output = await session.getOutput();
 
     if (output != null) {
@@ -290,9 +340,15 @@ Future<int?> getBitDepthWithFFprobe(String filePath) async {
 
 Future<Map<String, dynamic>> getAudioTechnicalInfo(String filePath) async {
   try {
-    final session = await FFprobeKit.execute(
-      '-v quiet -print_format json -show_format -show_streams "$filePath"',
-    );
+    final session = await FFprobeKit.executeWithArguments([
+      '-v',
+      'quiet',
+      '-print_format',
+      'json',
+      '-show_format',
+      '-show_streams',
+      filePath,
+    ]);
 
     final output = await session.getOutput();
     if (output == null || output.isEmpty) {

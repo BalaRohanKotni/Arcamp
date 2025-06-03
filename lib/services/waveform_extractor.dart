@@ -12,9 +12,18 @@ class WaveformExtractor {
   /// Convert FLAC file to temporary WAV file for processing
   static Future<String?> _convertFlacToWav(String flacPath) async {
     final wavPath = '${flacPath}_temp.wav';
-    final session = await FFmpegKit.execute(
-      '-y -i "$flacPath" -ac 1 -ar 44100 -f wav "$wavPath"',
-    );
+    final session = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-i',
+      flacPath,
+      '-ac',
+      '1',
+      '-ar',
+      '44100',
+      '-f',
+      'wav',
+      wavPath,
+    ]);
     final returnCode = await session.getReturnCode();
     if (ReturnCode.isSuccess(returnCode)) {
       return wavPath;
