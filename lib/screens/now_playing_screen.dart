@@ -26,7 +26,6 @@ class _AppState extends State<App> {
   // Audio state
   String? selectedFilePath;
   Metadata? audioMetadata;
-  Duration _currentPosition = Duration.zero;
   List<double> _waveformData = [];
   bool _isLoadingWaveform = false;
 
@@ -45,9 +44,6 @@ class _AppState extends State<App> {
   bool _isPlaying = false;
   StreamSubscription<PlaybackState>? _playbackStateSubscription;
 
-  // Timers
-  Timer? _positionTimer;
-
   @override
   void initState() {
     super.initState();
@@ -56,15 +52,13 @@ class _AppState extends State<App> {
 
   @override
   void dispose() {
-    _positionTimer?.cancel();
     _playbackStateSubscription?.cancel();
     super.dispose();
   }
 
   // MARK: - Initialization
   void _initializeApp() {
-    _startPositionTimer();
-    _listenToPlaybackState(); // Add this line
+    _listenToPlaybackState();
     _accentColor = AudioMetadataExtractor.getComplementaryColor(_dominantColor);
     if (widget.audioHandler is ArcampAudioHandler) {
       (widget.audioHandler as ArcampAudioHandler).setQueueCallbacks(
@@ -82,21 +76,6 @@ class _AppState extends State<App> {
         setState(() {
           _isPlaying = state.playing;
         });
-      }
-    });
-  }
-
-  void _startPositionTimer() {
-    _positionTimer = Timer.periodic(const Duration(milliseconds: 200), (
-      timer,
-    ) async {
-      if (mounted) {
-        final playbackState = widget.audioHandler.playbackState.value;
-        if (playbackState.playing) {
-          setState(() {
-            _currentPosition = playbackState.position;
-          });
-        }
       }
     });
   }
@@ -562,7 +541,7 @@ class _AppState extends State<App> {
             const SizedBox(height: 30),
             _buildTrackInfo(isDark),
             const SizedBox(height: 30),
-            _buildSeekBar(isDark),
+            _buildOptimizedSeekBar(isDark),
             const SizedBox(height: 30),
             _buildAudioInfo(),
             const SizedBox(height: 30),
@@ -678,20 +657,13 @@ class _AppState extends State<App> {
     );
   }
 
-  Widget _buildSeekBar(bool isDark) {
-    return SeekBarWidget(
+  Widget _buildOptimizedSeekBar(bool isDark) {
+    return SelfContainedSeekBar(
       isDark: isDark,
       audioHandler: widget.audioHandler,
       waveformData: _waveformData,
       accentColor: _accentColor,
-      currentPosition: _currentPosition,
       isLoadingWaveform: _isLoadingWaveform,
-      onSeek: (newPosition) {
-        widget.audioHandler.seek(newPosition);
-        setState(() {
-          _currentPosition = newPosition;
-        });
-      },
       formatDuration: _formatDuration,
       getTextColor: _getTextColor,
     );

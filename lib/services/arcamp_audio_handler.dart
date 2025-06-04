@@ -159,6 +159,7 @@ class ArcampAudioHandler extends BaseAudioHandler {
     try {
       // Stop current playback
       await _player.stop();
+      await _cleanupPreviousAlbumArt(); //
 
       // Load new audio file
       await _player.setFilePath(filePath);
