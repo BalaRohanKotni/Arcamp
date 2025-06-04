@@ -13,8 +13,14 @@ class QueueItem {
 class AnimatedEqualizer extends StatefulWidget {
   final Color color;
   final double size;
+  final bool isPlaying;
 
-  const AnimatedEqualizer({super.key, required this.color, this.size = 20});
+  const AnimatedEqualizer({
+    super.key,
+    required this.color,
+    this.size = 20,
+    this.isPlaying = false,
+  });
 
   @override
   State<AnimatedEqualizer> createState() => _AnimatedEqualizerState();
@@ -73,9 +79,14 @@ class _AnimatedEqualizerState extends State<AnimatedEqualizer>
           return AnimatedBuilder(
             animation: _animations[index],
             builder: (context, child) {
+              // Show static bars when paused, animated when playing
+              final heightMultiplier = widget.isPlaying
+                  ? _animations[index].value
+                  : 0.5; // Static height when paused
+
               return Container(
                 width: 2.5,
-                height: (widget.size * _animations[index].value) / 1.25,
+                height: (widget.size * heightMultiplier) / 1.25,
                 decoration: BoxDecoration(color: widget.color),
               );
             },
@@ -96,6 +107,7 @@ class AudioQueueWidget extends StatefulWidget {
   final Metadata? audioMetadata;
   final Color accentColor;
   final bool isDark;
+  final bool isPlaying;
 
   const AudioQueueWidget({
     super.key,
@@ -108,6 +120,7 @@ class AudioQueueWidget extends StatefulWidget {
     required this.audioMetadata,
     required this.accentColor,
     required this.isDark,
+    this.isPlaying = false,
   });
 
   @override
@@ -443,7 +456,6 @@ class _AudioQueueWidgetState extends State<AudioQueueWidget> {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (isCurrentlyPlaying)
-          // TODO animate only when current song's state is playing
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: AnimatedEqualizer(
@@ -451,6 +463,7 @@ class _AudioQueueWidgetState extends State<AudioQueueWidget> {
                   ? widget.accentColor
                   : Colors.deepPurple,
               size: 20,
+              isPlaying: widget.isPlaying, // Pass the playing state
             ),
           ),
         IconButton(

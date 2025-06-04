@@ -11,8 +11,18 @@ class ArcampAudioHandler extends BaseAudioHandler {
   final _player = AudioPlayer();
   File? _currentAlbumArtFile;
 
+  // Queue management callbacks
+  Function()? onSkipToNext;
+  Function()? onSkipToPrevious;
+
   ArcampAudioHandler() {
     _init();
+  }
+
+  // Set queue navigation callbacks
+  void setQueueCallbacks({Function()? skipToNext, Function()? skipToPrevious}) {
+    onSkipToNext = skipToNext;
+    onSkipToPrevious = skipToPrevious;
   }
 
   Future<void> _init() async {
@@ -247,15 +257,34 @@ class ArcampAudioHandler extends BaseAudioHandler {
 
   @override
   Future<void> skipToNext() async {
-    // Implement next track logic here
-    // TODO
-    print('Skip to next');
+    print('Skip to next track requested');
+    if (onSkipToNext != null) {
+      onSkipToNext!();
+    } else {
+      print('No skip to next callback set');
+    }
   }
 
   @override
   Future<void> skipToPrevious() async {
-    // Implement previous track logic here
-    // TODO
-    print('Skip to previous');
+    print('Skip to previous track requested');
+
+    // Check current position - if less than 4 seconds, go to previous track
+    // Otherwise, restart current track
+    final currentPosition = _player.position;
+    const thresholdDuration = Duration(seconds: 4);
+
+    if (currentPosition < thresholdDuration) {
+      // Go to previous track in queue
+      if (onSkipToPrevious != null) {
+        onSkipToPrevious!();
+      } else {
+        print('No skip to previous callback set');
+      }
+    } else {
+      // Restart current track (seek to beginning)
+      print('Restarting current track');
+      await seek(Duration.zero);
+    }
   }
 }

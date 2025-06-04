@@ -21,11 +21,14 @@ class AudioControlButtons extends StatelessWidget {
       stream: widget.audioHandler.playbackState,
       builder: (context, snapshot) {
         final isPlaying = snapshot.data?.playing ?? false;
+
         return Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             IconButton(
-              onPressed: () {},
+              onPressed: () {
+                widget.audioHandler.skipToPrevious();
+              },
               icon: const Icon(Icons.skip_previous),
               iconSize: 32,
               color: _accentColor,
@@ -55,7 +58,9 @@ class AudioControlButtons extends StatelessWidget {
               ),
             ),
             IconButton(
-              onPressed: () {},
+              onPressed: () {
+                widget.audioHandler.skipToNext();
+              },
               icon: const Icon(Icons.skip_next),
               iconSize: 32,
               color: _accentColor,

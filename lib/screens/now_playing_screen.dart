@@ -42,6 +42,9 @@ class _AppState extends State<App> {
   List<QueueItem> _queueItems = [];
   int _currentQueueIndex = -1;
 
+  bool _isPlaying = false;
+  StreamSubscription<PlaybackState>? _playbackStateSubscription;
+
   // Timers
   Timer? _positionTimer;
 
@@ -54,13 +57,33 @@ class _AppState extends State<App> {
   @override
   void dispose() {
     _positionTimer?.cancel();
+    _playbackStateSubscription?.cancel();
     super.dispose();
   }
 
   // MARK: - Initialization
   void _initializeApp() {
     _startPositionTimer();
+    _listenToPlaybackState(); // Add this line
     _accentColor = AudioMetadataExtractor.getComplementaryColor(_dominantColor);
+    if (widget.audioHandler is ArcampAudioHandler) {
+      (widget.audioHandler as ArcampAudioHandler).setQueueCallbacks(
+        skipToNext: _skipToNextTrack,
+        skipToPrevious: _skipToPreviousTrack,
+      );
+    }
+  }
+
+  void _listenToPlaybackState() {
+    _playbackStateSubscription = widget.audioHandler.playbackState.listen((
+      state,
+    ) {
+      if (mounted) {
+        setState(() {
+          _isPlaying = state.playing;
+        });
+      }
+    });
   }
 
   void _startPositionTimer() {
@@ -189,6 +212,46 @@ class _AppState extends State<App> {
   }
 
   // MARK: - Queue Management
+
+  Future<void> _loadQueueItem(int index) async {
+    if (index < 0 || index >= _queueItems.length) return;
+
+    final queueItem = _queueItems[index];
+
+    setState(() {
+      selectedFilePath = queueItem.filePath;
+      audioMetadata = queueItem.metadata;
+      _currentQueueIndex = index;
+      _isLoadingWaveform = false;
+    });
+
+    // Extract metadata if not already available
+    if (queueItem.metadata == null) {
+      await _extractAudioMetadata(queueItem.filePath);
+      // Update the queue item with the extracted metadata
+      setState(() {
+        _queueItems[index] = QueueItem(
+          filePath: queueItem.filePath,
+          metadata: audioMetadata,
+          displayName: queueItem.displayName,
+        );
+      });
+    } else {
+      await _updateColorsFromAlbumArt(queueItem.metadata);
+    }
+
+    // Extract waveform data
+    await _extractWaveformData(queueItem.filePath);
+
+    // Load the new audio file into the handler (without playing)
+    if (widget.audioHandler is ArcampAudioHandler) {
+      await (widget.audioHandler as ArcampAudioHandler).loadNewAudio(
+        queueItem.filePath,
+        audioMetadata!,
+      );
+    }
+  }
+
   Future<void> _addFilesToQueue(List<String> filePaths) async {
     for (String filePath in filePaths) {
       if (_isAudioFile(filePath)) {
@@ -289,6 +352,9 @@ class _AppState extends State<App> {
         audioMetadata!,
       );
     }
+
+    // Auto-play the selected song
+    await widget.audioHandler.play();
   }
 
   void _removeFromQueue(int index) {
@@ -314,6 +380,43 @@ class _AppState extends State<App> {
     return supportedExtensions.any(
       (ext) => filePath.toLowerCase().endsWith(ext),
     );
+  }
+
+  // MARK: - Queue Navigation Methods
+  Future<void> _skipToNextTrack() async {
+    if (_queueItems.isNotEmpty && _currentQueueIndex < _queueItems.length - 1) {
+      final nextIndex = _currentQueueIndex + 1;
+      final wasPlaying = _isPlaying;
+      print('Skipping to next track: index $nextIndex');
+
+      // Load the next track without auto-playing
+      await _loadQueueItem(nextIndex);
+
+      // Only play if the previous track was playing
+      if (wasPlaying) {
+        await widget.audioHandler.play();
+      }
+    } else {
+      print('No next track available in queue');
+    }
+  }
+
+  Future<void> _skipToPreviousTrack() async {
+    if (_queueItems.isNotEmpty && _currentQueueIndex > 0) {
+      final previousIndex = _currentQueueIndex - 1;
+      final wasPlaying = _isPlaying;
+      print('Skipping to previous track: index $previousIndex');
+
+      // Load the previous track without auto-playing
+      await _loadQueueItem(previousIndex);
+
+      // Only play if the previous track was playing
+      if (wasPlaying) {
+        await widget.audioHandler.play();
+      }
+    } else {
+      print('No previous track available in queue');
+    }
   }
 
   // MARK: - Utility Methods
@@ -613,6 +716,7 @@ class _AppState extends State<App> {
       audioMetadata: audioMetadata,
       accentColor: _accentColor,
       isDark: isDark,
+      isPlaying: _isPlaying,
     );
   }
 
