@@ -62,8 +62,8 @@ class _AppState extends State<App> {
     _accentColor = AudioMetadataExtractor.getComplementaryColor(_dominantColor);
     if (widget.audioHandler is ArcampAudioHandler) {
       (widget.audioHandler as ArcampAudioHandler).setQueueCallbacks(
-        skipToNext: _skipToNextTrack,
-        skipToPrevious: _skipToPreviousTrack,
+        skipToNext: () async => await _skipToNextTrack(),
+        skipToPrevious: () async => await _skipToPreviousTrack(),
       );
     }
   }
@@ -363,17 +363,25 @@ class _AppState extends State<App> {
 
   // MARK: - Queue Navigation Methods
   Future<void> _skipToNextTrack() async {
+    print('_skipToNextTrack called');
     if (_queueItems.isNotEmpty && _currentQueueIndex < _queueItems.length - 1) {
       final nextIndex = _currentQueueIndex + 1;
       final wasPlaying = _isPlaying;
-      print('Skipping to next track: index $nextIndex');
 
-      // Load the next track without auto-playing
-      await _loadQueueItem(nextIndex);
+      try {
+        // Load the next track
+        await _loadQueueItem(nextIndex);
 
-      // Only play if the previous track was playing
-      if (wasPlaying) {
-        await widget.audioHandler.play();
+        // Wait a moment for the track to be fully loaded
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        // Play if the previous track was playing
+        if (wasPlaying) {
+          print('Auto-playing next track');
+          await widget.audioHandler.play();
+        }
+      } catch (e) {
+        print('Error skipping to next track: $e');
       }
     } else {
       print('No next track available in queue');
@@ -381,17 +389,25 @@ class _AppState extends State<App> {
   }
 
   Future<void> _skipToPreviousTrack() async {
+    print('_skipToPreviousTrack called');
     if (_queueItems.isNotEmpty && _currentQueueIndex > 0) {
       final previousIndex = _currentQueueIndex - 1;
       final wasPlaying = _isPlaying;
-      print('Skipping to previous track: index $previousIndex');
 
-      // Load the previous track without auto-playing
-      await _loadQueueItem(previousIndex);
+      try {
+        // Load the previous track
+        await _loadQueueItem(previousIndex);
 
-      // Only play if the previous track was playing
-      if (wasPlaying) {
-        await widget.audioHandler.play();
+        // Wait a moment for the track to be fully loaded
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        // Play if the previous track was playing
+        if (wasPlaying) {
+          print('Auto-playing previous track');
+          await widget.audioHandler.play();
+        }
+      } catch (e) {
+        print('Error skipping to previous track: $e');
       }
     } else {
       print('No previous track available in queue');
